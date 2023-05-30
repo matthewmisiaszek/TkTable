@@ -55,18 +55,26 @@ NONE = tuple()
 
 
 class TkTable(tk.Frame):
-    """A Tkinter Widget to display and edit a DataFrame
-
-    DataFrame edits are done without reassigning the DataFrame
-    variable, meaning that existing references to the DataFrame
-    will continue to work.
-    
-    Valid buttons: APPEND_ROW, INSERT_ROW, MOVE_ROW, EDIT_ROW,
-    DELETE_ROW, APPEND_COLUMN, MOVE_COLUMN, DELETE_COLUMN,
-    SET_INDEX, REFRESH"""
     def __init__(self, parent:tk.Widget, df:pd.DataFrame, 
                  buttons:tuple[str,...]=VIEW_ONLY, 
                  custom_buttons:tuple[tuple[str, typing.Callable],...]=NONE):
+        """A Tkinter Widget to display and edit a DataFrame
+
+        DataFrame edits are done without reassigning the DataFrame
+        variable, meaning that existing references to the DataFrame
+        will continue to work.
+
+        parent: the parent tk Widget that TkTable will pack/grid into
+
+        df: the dataframe to display / edit
+
+        buttons: tuple of button names (APPEND_ROW, INSERT_ROW, MOVE_ROW, 
+        EDIT_ROW, DELETE_ROW, APPEND_COLUMN, MOVE_COLUMN, DELETE_COLUMN,
+        SET_INDEX, REFRESH) or preset group (NONE, ALL, VIEW_ONLY, ROW_ONLY, 
+        COLUMN_ONLY)
+
+        custom buttons: tuple of (label, function) pairs to create buttons"""
+
         tk.Frame.__init__(self, parent)
         self.df = df
         tree_frame = tk.Frame(self)
@@ -108,28 +116,53 @@ class TkTable(tk.Frame):
     def refresh(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
-        self.tree['columns'] = _get_df_head(self.df)
+        hd = _apply_temp_index(self.df)
+        self.tree['columns'] = ['[' + str(hd[i]) + ']' 
+                                if i < 0 else 
+                                hd[i] 
+                                for i in self.df.columns]
         for column in self.tree['columns']:
             self.tree.heading(column, text=column)
             self.tree.column(column, width=100)
-        for i in range(self.df.shape[0]):
-            row = _get_df_row(self.df, i)
-            self.tree.insert('', 'end', i, values=row)
+        for i in self.df.index:
+            self.tree.insert('', 'end', i, values=list(self.df.loc[i]))
+        _unapply_temp_index(self.df, hd)
+        print(self.df)
     
-    def append_row(self):
-        new_row = self.row_editor()
-        temp_df = pd.concat([self.df, new_row], copy=False, ignore_index=False)
-        self.df.drop(self.df.index[0:], inplace=True)
-        self.df[temp_df.columns]=temp_df
-        self.refresh()
+    def append_row(self, values:list=None):
+        self.row_editor(new=True, values=values)
     
-    def insert_row(self):
+    def insert_row(self, idx:int=None, values:list=None):
+        if idx is None:
+            focus = self.tree.focus()
+            if focus == '':
+                return
+            idx = int(focus)
+        self.row_editor(idx=idx, values=values, new=True)
+
+    def edit_row(self):
         focus = self.tree.focus()
         if focus == '':
             return
         idx = int(focus)
-        new_row = self.row_editor()
-        _df_insert_row_inplace(self.df, idx, new_row)
+        self.row_editor(idx=idx, new=False)
+    
+    def row_editor(self, idx:int=None, new:bool=True, values:list=None):
+        if new is False and idx is None:
+            return  # this combination is not allowed
+        columns = _get_df_head(self.df)
+        hd = _apply_temp_index(self.df)
+        if values is None:
+            defaults = None if new is True else list(self.df.loc[idx])
+            values = _multi_input(self, columns, 'Row Editor', defaults)
+        if values is not None:
+            if idx is None:
+                idx2 = self.df.shape[0] + 1
+            else:
+                idx2 = idx - 0.5 * new
+            self.df.loc[idx2] = values
+            self.df.sort_index(ascending=True, inplace=True)
+        _unapply_temp_index(self.df, hd)
         self.refresh()
     
     def move_row(self):
@@ -138,40 +171,35 @@ class TkTable(tk.Frame):
         oa = _numberlist(row_list)
         ob = _numberlist(row_list + ['move to end'])
         values = _multi_input(self, (pa, pb), options={pa:oa, pb:ob})
-        if values:
-            va, vb = values
-            ai = oa.index(va)
-            bi = ob.index(vb)
-            if ai <= bi:
-                bi -= 1
-            row = self.df.iloc[ai:ai+1, :]
-            _df_drop_row_inplace(self.df, ai)
-            _df_insert_row_inplace(self.df, bi, row)
-        self.refresh()
-    
-    def edit_row(self):
-        focus = self.tree.focus()
-        if focus == '':
+        if values is None:
             return
-        idx = int(focus)
-        new_row = self.row_editor(idx)
-        _df_drop_row_inplace(self.df, idx)
-        _df_insert_row_inplace(self.df, idx, new_row)
+        va, vb = values
+        ai, bi = oa.index(va), ob.index(vb)
+        hd = _apply_temp_index(self.df)
+        new_index = self.df.index.to_list()
+        new_index[ai] = bi - 0.5
+        self.df['__new_index__']=new_index
+        self.df.set_index('__new_index__', inplace=True)
+        self.df.sort_index(ascending=True, inplace=True)
+        _unapply_temp_index(self.df, hd)
         self.refresh()
-    
+
     def delete_row(self):
         focus = self.tree.focus()
         if focus == '':
             return
         idx = int(focus)
-        _df_drop_row_inplace(self.df, idx)
+        hd = _apply_temp_index(self.df)
+        self.df.drop(idx, inplace=True)
+        _unapply_temp_index(self.df, hd)
         self.refresh()
     
     def add_column(self):
-        values = _multi_input(self, ('Column Name',))
+        fields = ['Column Name'] + list(self.df.index)
+        values = _multi_input(self, fields)
         if values:
             name = values[0]
-            self.df[name]=''
+            self.df[name]=values[1:]
         self.refresh()
 
     def move_column(self):
@@ -184,12 +212,12 @@ class TkTable(tk.Frame):
             va, vb = values
             ai = oa.index(va)
             bi = ob.index(vb)
-            if ai <= bi:
-                bi -= 1
-            name = column_list[ai]
-            column = self.df.iloc[:, ai]
-            _df_delete_column_inplace(self.df, ai)
-            self.df.insert(bi, name, column)
+            hd = _apply_temp_index(self.df)
+            self.df.rename(columns={bi: bi + .5, ai:bi}, inplace=True)
+            hd[bi + .5] = hd[bi] if bi in hd else None
+            hd[bi]=hd[ai]
+            self.df.sort_index(axis=1, inplace=True)
+            _unapply_temp_index(self.df, hd)
         self.refresh()
     
     def delete_column(self):
@@ -199,21 +227,11 @@ class TkTable(tk.Frame):
         values = _multi_input(self, (prompt,),options={prompt:column_list_i})
         if values:
             ai = column_list_i.index(values[0])
-            _df_delete_column_inplace(self.df, ai)
+            hd = _apply_temp_index(self.df)
+            self.df.drop(ai, inplace=True, axis=1)
+            _unapply_temp_index(self.df, hd)
         self.refresh()
-    
-    def row_editor(self, idx=None):
-        columns = _get_df_head(self.df)
-        defaults=None
-        if idx is not None:
-            defaults = _get_df_row(self.df, idx)
-        values = _multi_input(self, columns, 'Row Editor', defaults)
-        if values:
-            new_row = pd.DataFrame([values], columns=columns)
-            new_row.set_index(self.df.index.names, inplace=True)
-            return new_row
-        return None
-    
+
     def set_index(self):
         columns = _get_df_head(self.df)
         fields = ['keep old index'] + columns
@@ -225,7 +243,8 @@ class TkTable(tk.Frame):
             index_columns = [c for v, c in zip(values, columns) if v == 'True']
             if keep_index=='True':
                 self.df.reset_index(inplace=True)
-            self.df.set_index(index_columns, inplace=True)
+            if index_columns:
+                self.df.set_index(index_columns, inplace=True)
             self.refresh()
 
 
@@ -262,17 +281,6 @@ def _numberlist(x):
     return [str(i) + '. ' + str(xi) for i, xi in enumerate(x)]
 
 
-def _get_df_row(df, idx):
-    index = df.index[idx]
-    if isinstance(index, tuple):
-        index = list(index)
-    else:
-        index = [index]
-    values = list(df.iloc[idx, :])
-    row = index + values
-    return row
-
-
 def _get_df_head(df):
     columns = list(df.columns)
     index_col = list(df.index.names)
@@ -280,27 +288,32 @@ def _get_df_head(df):
     return head
 
 
-def _df_drop_row_inplace(df, idx):
-    a = df.iloc[:idx, :]
-    b = df.iloc[idx+1:, :]
-    temp = pd.concat([a,b],copy=False,ignore_index=False)
-    df.drop(df.index[0:], inplace=True)
-    df[temp.columns] = temp
+def _apply_temp_index(df):
+    # replace column names and index names with known sequential values
+    # ensures no duplicates in index and column names
+    # reset index - ensures no duplicates in index
+    # returns a dictionary of {temporary: real} index and column names
+    temp_index = list(range(-len(df.index.names), 0))
+    temp_columns = list(range(len(df.columns)))
+    header_dict ={k:v for k,v in 
+                  zip(temp_index + temp_columns, 
+                      list(df.index.names) + list(df.columns))}
+    df.index.names = temp_index
+    df.columns = temp_columns
+    df.reset_index(drop=False, inplace=True)
+    return header_dict
 
 
-def _df_insert_row_inplace(df, idx, row):
-    a = df.iloc[:idx, :]
-    b = df.iloc[idx:, :]
-    temp = pd.concat([a,row,b],copy=False,ignore_index=False)
-    df.drop(df.index[0:], inplace=True)
-    df[temp.columns] = temp
-
-
-def _df_delete_column_inplace(df, idx):
-    column_list = list(df.columns.values)
-    column_list[idx] = '__TO DELETE__'
-    df.columns = column_list
-    df.drop('__TO DELETE__', axis=1, inplace=True)
+def _unapply_temp_index(df, header_dict):
+    # return a DataFrame to its original index and column names based
+    # on supplied header_dict of {temporary: real} index and column names
+    # Index columns should be < 0 and other columns should be > 0
+    index_columns = [c for c in df.columns if c < 0]
+    df.set_index(index_columns, inplace=True)
+    index_names = [header_dict[i] for i in df.index.names]
+    df.index.names = index_names
+    column_names = [header_dict[c] for c in df.columns]
+    df.columns = column_names
 
 
 def _edit_csv():
@@ -308,7 +321,7 @@ def _edit_csv():
     fp = filedialog.askopenfile(title='Select CSV file to open.')
     df = pd.read_csv(fp)
     root = tk.Tk()
-    TKTable(root, df, buttons=ALL).pack(side='top', expand=True, fill='both')
+    TkTable(root, df, buttons=ALL).pack(side='top', expand=True, fill='both')
     root.mainloop()
     root = tk.Tk()
     tk.Label(root, text='Save the DataFrame?').grid(row=0,column=0)
